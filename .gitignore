@@ -1,5 +1,7 @@
 .env
 checkpoints/*
+examples/*
+
 # Ignore Submissions
 data/submission/*
 data/subtask1/*
@@ -187,3 +189,10 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+
+# IDE options
+.vscode
+
+# pip installer temp files
+src/taming-transformers
+src/clip

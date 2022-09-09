@@ -5,6 +5,7 @@ import numpy as np
 from omegaconf import OmegaConf
 from PIL import Image
 from tqdm import tqdm, trange
+from imwatermark import WatermarkEncoder
 from itertools import islice
 from einops import rearrange
 from torchvision.utils import make_grid
@@ -84,12 +85,12 @@ def load_replacement(x):
         return x
 
 
-def check_safety(x_image):
+def check_safety(x_image, censor_outputs=False):
     safety_checker_input = safety_feature_extractor(numpy_to_pil(x_image), return_tensors="pt")
     x_checked_image, has_nsfw_concept = safety_checker(images=x_image, clip_input=safety_checker_input.pixel_values)
     assert x_checked_image.shape[0] == len(has_nsfw_concept)
     for i in range(len(has_nsfw_concept)):
-        if has_nsfw_concept[i]:
+        if has_nsfw_concept[i] and censor_outputs:
             x_checked_image[i] = load_replacement(x_checked_image[i])
     return x_checked_image, has_nsfw_concept
 
@@ -139,6 +140,11 @@ def main():
     )
     parser.add_argument(
         "--fixed_code",
+        action='store_true',
+        help="if enabled, uses the same starting code across samples ",
+    )
+    parser.add_argument(
+        "--check_nsfw",
         action='store_true',
         help="if enabled, uses the same starting code across samples ",
     )
@@ -250,6 +256,11 @@ def main():
     os.makedirs(opt.outdir, exist_ok=True)
     outpath = opt.outdir
 
+    print("Creating invisible watermark encoder (see https://github.com/ShieldMnt/invisible-watermark)...")
+    wm = "StableDiffusionV1"
+    wm_encoder = WatermarkEncoder()
+    wm_encoder.set_watermark('bytes', wm.encode('utf-8'))
+
     batch_size = opt.n_samples
     n_rows = opt.n_rows if opt.n_rows > 0 else batch_size
     if not opt.from_file:
@@ -273,8 +284,13 @@ def main():
         start_code = torch.randn([opt.n_samples, opt.C, opt.H // opt.f, opt.W // opt.f], device=device)
 
     precision_scope = autocast if opt.precision=="autocast" else nullcontext
+    if torch.cuda.is_available():
+        precision_arg = "cuda"
+    else:
+        precision_scope = nullcontext
+        precision_arg = None
     with torch.no_grad():
-        with precision_scope("cuda"):
+        with precision_scope(precision_arg):
             with model.ema_scope():
                 tic = time.time()
                 all_samples = list()
@@ -287,22 +303,22 @@ def main():
                             prompts = list(prompts)
                         c = model.get_learned_conditioning(prompts)
                         shape = [opt.C, opt.H // opt.f, opt.W // opt.f]
-                        samples_ddim, _ = sampler.sample(S=opt.ddim_steps,
-                                                         conditioning=c,
-                                                         batch_size=opt.n_samples,
-                                                         shape=shape,
-                                                         verbose=False,
-                                                         unconditional_guidance_scale=opt.scale,
-                                                         unconditional_conditioning=uc,
-                                                         eta=opt.ddim_eta,
-                                                         x_T=start_code)
+                        samples_ddim, _ = sampler.sample(
+                            S=opt.ddim_steps,
+                            conditioning=c,
+                            batch_size=opt.n_samples,
+                            shape=shape,
+                            verbose=False,
+                            unconditional_guidance_scale=opt.scale,
+                            unconditional_conditioning=uc,
+                            eta=opt.ddim_eta,
+                            x_T=start_code)
 
                         x_samples_ddim = model.decode_first_stage(samples_ddim)
                         x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
                         x_samples_ddim = x_samples_ddim.cpu().permute(0, 2, 3, 1).numpy()
 
-                        x_checked_image, has_nsfw_concept = check_safety(x_samples_ddim)
-
+                        x_checked_image, has_nsfw_concept = check_safety(x_samples_ddim, opt.check_nsfw)
                         x_checked_image_torch = torch.from_numpy(x_checked_image).permute(0, 3, 1, 2)
 
                         if not opt.skip_save:

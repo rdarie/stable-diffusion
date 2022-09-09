@@ -78,9 +78,10 @@ class Searcher(object):
                        searcher_savedir=None):
 
         print('Start training searcher')
-        searcher = scann.scann_ops_pybind.builder(self.database['embedding'] /
-                                                  np.linalg.norm(self.database['embedding'], axis=1)[:, np.newaxis],
-                                                  k, metric)
+        searcher = scann.scann_ops_pybind.builder(
+            self.database['embedding'] /
+            np.linalg.norm(self.database['embedding'], axis=1)[:, np.newaxis],
+            k, metric)
         self.searcher = searcher.score_brute_force().build()
         print('Finish training searcher')
 
